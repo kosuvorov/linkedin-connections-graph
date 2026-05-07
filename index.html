@@ -55,10 +55,9 @@
 
   #graph { width: 100%; height: 100%; cursor: grab; display: block; }
   #graph:active { cursor: grabbing; }
+  #edgeCanvas { position: absolute; top: 0; left: 0; pointer-events: none; }
 
   .links { pointer-events: none; }
-  .link.you-link { stroke: #313244; stroke-opacity: 0.22; stroke-width: 0.5; }
-  .link.clique-link { stroke-opacity: 0.32; stroke-width: 0.7; }
   .person-circle { cursor: pointer; }
   .you-circle { cursor: pointer; }
   .you-label { fill: #f9e2af; font-size: 14px; font-weight: 700; pointer-events: none; text-anchor: middle; dominant-baseline: central; }
@@ -66,7 +65,6 @@
   .group-label-bg { pointer-events: none; }
   .person-label { fill: #cdd6f4; font-size: 9px; pointer-events: none; text-anchor: middle; dominant-baseline: central; }
   .dimmed { opacity: 0.1; }
-  .link.dimmed { opacity: 0.03; }
   .group-label.dimmed { opacity: 0.25; }
   .person-circle.match { stroke: #f38ba8 !important; stroke-width: 3px; }
 
@@ -149,6 +147,7 @@
     <p class="small">Everything runs locally in your browser. Nothing is uploaded.</p>
   </div>
 
+  <canvas id="edgeCanvas"></canvas>
   <svg id="graph"></svg>
   <div id="tooltip"></div>
   <div id="drag-overlay"></div>
@@ -165,6 +164,46 @@ const svg = d3.select('#graph');
 
 let rawPeople = [];
 let simulation;
+let edgeCtx, edgeW, edgeH, edgeTransform = d3.zoomIdentity;
+let edgeCliqueByColor = new Map(), edgeYouLinks = [];
+let searchMatchedIds = null;
+
+function drawEdges() {
+  if (!edgeCtx) return;
+  const dpr = window.devicePixelRatio || 1;
+  const ctx = edgeCtx;
+  const t = edgeTransform;
+  const active = searchMatchedIds;
+
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, edgeW, edgeH);
+  ctx.translate(t.x, t.y);
+  ctx.scale(t.k, t.k);
+
+  ctx.strokeStyle = 'rgba(49, 50, 68, 0.22)';
+  ctx.lineWidth = 0.5;
+  ctx.beginPath();
+  for (const l of edgeYouLinks) {
+    if (active && !active.has(l.target.id)) continue;
+    ctx.moveTo(l.source.x, l.source.y);
+    ctx.lineTo(l.target.x, l.target.y);
+  }
+  ctx.stroke();
+
+  ctx.lineWidth = 0.7;
+  ctx.globalAlpha = 0.32;
+  for (const [color, batch] of edgeCliqueByColor) {
+    ctx.strokeStyle = color;
+    ctx.beginPath();
+    for (const l of batch) {
+      if (active && !active.has(l.source.id) && !active.has(l.target.id)) continue;
+      ctx.moveTo(l.source.x, l.source.y);
+      ctx.lineTo(l.target.x, l.target.y);
+    }
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+}
 
 const ui = {
   groupBy: 'company',
@@ -296,9 +335,6 @@ function colorForKey(key) {
 let groupsCache;
 let personNodesByGroup;
 
-const FULL_CLIQUE_THRESHOLD = 18;
-const SPARSE_K = 3;
-
 function buildGraph() {
   const groups = new Map();
   rawPeople.forEach(p => {
@@ -325,25 +361,11 @@ function buildGraph() {
     });
 
     const n = ids.length;
-    if (n <= FULL_CLIQUE_THRESHOLD) {
-      // Full clique — every pair connected. This is what creates the dense bubble look.
-      for (let i = 0; i < n; i++)
-        for (let j = i + 1; j < n; j++)
-          links.push({ source: ids[i], target: ids[j], kind: 'clique', color });
-    } else {
-      // Sparse for big groups: each node linked to next K + one chord across.
-      // Keeps the cluster cohesive without the O(n^2) edge count.
-      for (let i = 0; i < n; i++) {
-        for (let k = 1; k <= SPARSE_K; k++) {
-          const j = (i + k) % n;
-          if (i < j) links.push({ source: ids[i], target: ids[j], kind: 'clique', color });
-        }
-        if (i % 4 === 0) {
-          const j = (i + Math.floor(n / 2)) % n;
-          if (i < j) links.push({ source: ids[i], target: ids[j], kind: 'clique', color });
-        }
-      }
-    }
+    // Full clique for every group — this is what creates the dense bubble look.
+    // The original tool does the same: every pair in a group is connected.
+    for (let i = 0; i < n; i++)
+      for (let j = i + 1; j < n; j++)
+        links.push({ source: ids[i], target: ids[j], kind: 'clique', color });
   });
 
   return { nodes, links, groups };
@@ -381,26 +403,34 @@ function render(nodes, links, restart) {
   const height = window.innerHeight;
   svg.attr('viewBox', [0, 0, width, height]);
 
-  const root = svg.append('g');
-  svg.call(d3.zoom().scaleExtent([0.05, 8]).on('zoom', e => root.attr('transform', e.transform)));
+  const dpr = window.devicePixelRatio || 1;
+  const canvas = $('edgeCanvas');
+  canvas.width = width * dpr;
+  canvas.height = height * dpr;
+  canvas.style.width = width + 'px';
+  canvas.style.height = height + 'px';
+  edgeCtx = canvas.getContext('2d');
+  edgeW = width; edgeH = height;
 
-  // Layer order, bottom → top: clique edges, you edges, person circles, you node, group labels
   const cliqueLinks = links.filter(l => l.kind === 'clique');
-  const youLinks = links.filter(l => l.kind === 'you');
+  edgeYouLinks = links.filter(l => l.kind === 'you');
+  edgeCliqueByColor = new Map();
+  for (const l of cliqueLinks) {
+    if (!edgeCliqueByColor.has(l.color)) edgeCliqueByColor.set(l.color, []);
+    edgeCliqueByColor.get(l.color).push(l);
+  }
 
-  const cliqueLayer = root.append('g').attr('class', 'links');
-  const youLinkLayer = root.append('g').attr('class', 'links');
+  const root = svg.append('g');
+  edgeTransform = d3.zoomIdentity;
+  svg.call(d3.zoom().scaleExtent([0.05, 8]).on('zoom', e => {
+    edgeTransform = e.transform;
+    root.attr('transform', e.transform);
+    drawEdges();
+  }));
+
   const nodesLayer = root.append('g');
   const youLayer = root.append('g');
   const labelsLayer = root.append('g');
-
-  const cliqueLine = cliqueLayer.selectAll('line').data(cliqueLinks).join('line')
-    .attr('class', 'link clique-link')
-    .attr('stroke', d => d.color);
-
-  const youLine = youLinkLayer.selectAll('line').data(youLinks).join('line')
-    .attr('class', 'link you-link')
-    .attr('stroke', '#313244');
 
   // Person nodes as bare <circle> elements (no <g> wrapper) for performance.
   const personNodes = nodes.filter(n => n.type === 'person');
@@ -476,39 +506,21 @@ function render(nodes, links, restart) {
   const cx = width / 2, cy = height / 2;
   simulation = d3.forceSimulation(nodes)
     .force('link', d3.forceLink(links).id(d => d.id)
-      .distance(d => {
-        if (d.kind !== 'you') return 22;
-        const size = d.target.groupKey ? (personNodesByGroup.get(d.target.groupKey)?.length || 1) : 1;
-        // bigger groups need a bigger orbital radius so members aren't yanked into the same ring
-        return 80 + Math.sqrt(size) * 28;
-      })
-      .strength(d => {
-        if (d.kind !== 'you') return 0.5;
-        const size = d.target.groupKey ? (personNodesByGroup.get(d.target.groupKey)?.length || 1) : 1;
-        // total inward pull per group ≈ constant (n * 1/n) — big bubbles aren't torn apart by the sheer number of you-links
-        return 0.06 / size;
-      }))
+      .distance(d => d.kind === 'you' ? 80 + Math.sqrt(personNodesByGroup.get(d.target.groupKey)?.length || 1) * 28 : 30)
+    )
     .force('charge', d3.forceManyBody()
-      .strength(d => d.type === 'you' ? -400 : -28)
-      .distanceMax(0.22 * Math.min(width, height)))
-    .force('collide', d3.forceCollide().radius(7).strength(0.6))
+      .strength(d => d.type === 'you' ? -400 : -100)
+      .distanceMax(0.2 * Math.min(width, height)))
     .force('center', d3.forceCenter(cx, cy).strength(0.02))
     .alphaDecay(0.035)
     .alphaMin(0.005)
     .velocityDecay(0.5)
     .on('tick', () => {
       tickCount++;
-      cliqueLine
-        .attr('x1', d => d.source.x).attr('y1', d => d.source.y)
-        .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
-      youLine
-        .attr('x1', d => d.source.x).attr('y1', d => d.source.y)
-        .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+      drawEdges();
       personCircle.attr('cx', d => d.x).attr('cy', d => d.y);
       if (personLabel) personLabel.attr('x', d => d.x).attr('y', d => d.y);
       if (youGroup) youGroup.attr('transform', d => `translate(${d.x},${d.y})`);
-
-      // Throttle group label centroid updates — they don't need 60fps precision.
       if (tickCount % 3 === 0) updateGroupLabels(groupLabel);
     })
     .on('end', () => updateGroupLabels(groupLabel));
@@ -552,15 +564,13 @@ function applySearch() {
   if (!simulation) return;
   const q = ui.search.trim().toLowerCase();
   const personCircle = svg.selectAll('.person-circle');
-  const cliqueLine = svg.selectAll('.clique-link');
-  const youLine = svg.selectAll('.you-link');
   const groupLabel = svg.selectAll('.group-label');
 
   if (!q) {
     personCircle.classed('dimmed', false).classed('match', false);
-    cliqueLine.classed('dimmed', false);
-    youLine.classed('dimmed', false);
     groupLabel.classed('dimmed', false);
+    searchMatchedIds = null;
+    drawEdges();
     return;
   }
 
@@ -575,14 +585,9 @@ function applySearch() {
   });
   personCircle.classed('match', d => match.has(d.id))
               .classed('dimmed', d => !match.has(d.id));
-  const dimLink = d => {
-    const s = typeof d.source === 'object' ? d.source.id : d.source;
-    const t = typeof d.target === 'object' ? d.target.id : d.target;
-    return !match.has(s) && !match.has(t);
-  };
-  cliqueLine.classed('dimmed', dimLink);
-  youLine.classed('dimmed', dimLink);
   groupLabel.classed('dimmed', d => !matchedGroups.has(d.key));
+  searchMatchedIds = match;
+  drawEdges();
 }
 
 function esc(s) {
@@ -593,6 +598,12 @@ window.addEventListener('resize', () => {
   if (!simulation) return;
   const w = window.innerWidth, h = window.innerHeight;
   svg.attr('viewBox', [0, 0, w, h]);
+  const dpr = window.devicePixelRatio || 1;
+  const canvas = $('edgeCanvas');
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
+  edgeCtx = canvas.getContext('2d');
+  edgeW = w; edgeH = h;
   simulation.force('center', d3.forceCenter(w/2, h/2)).alpha(0.3).restart();
   const you = simulation.nodes().find(n => n.type === 'you');
   if (you) { you.fx = w/2; you.fy = h/2; }
