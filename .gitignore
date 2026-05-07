@@ -1,0 +1,10 @@
+# LinkedIn data exports — never commit personal data
+*.csv
+Connections*.csv
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp

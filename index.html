@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>LinkedIn Connections Graph</title>
+<script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #15151f; color: #cdd6f4;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; overflow: hidden; }
+  #app { position: relative; width: 100vw; height: 100vh; }
+
+  #panel {
+    position: absolute; top: 16px; left: 16px; z-index: 10;
+    background: rgba(30, 30, 46, 0.92);
+    border: 1px solid #313244;
+    border-radius: 12px;
+    padding: 16px;
+    width: 270px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    max-height: calc(100vh - 32px);
+    overflow-y: auto;
+  }
+  #panel h2 { margin: 0 0 12px; font-size: 16px; font-weight: 600; color: #cdd6f4; }
+  #panel .row { margin-bottom: 12px; }
+  #panel label { display: block; font-size: 12px; color: #a6adc8; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+  #panel select, #panel input[type=text], #panel input[type=number] {
+    width: 100%; box-sizing: border-box;
+    background: #313244; color: #cdd6f4; border: 1px solid #45475a;
+    padding: 8px 10px; border-radius: 6px; font-size: 13px; outline: none;
+  }
+  #panel select:focus, #panel input[type=text]:focus { border-color: #89b4fa; }
+  #panel .toggle { display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 4px 0; user-select: none; }
+  #panel .toggle input { margin: 0; cursor: pointer; }
+  #panel .toggle span { font-size: 13px; color: #cdd6f4; }
+  .btn {
+    background: #89b4fa; color: #1e1e2e; border: none;
+    padding: 10px 14px; border-radius: 6px; font-size: 13px; font-weight: 600;
+    cursor: pointer; width: 100%; transition: background 0.15s;
+  }
+  .btn:hover { background: #b4befe; }
+  .btn.secondary { background: #45475a; color: #cdd6f4; }
+  .btn.secondary:hover { background: #585b70; }
+  #fileInput { display: none; }
+  #stats { font-size: 12px; color: #a6adc8; padding: 8px 0; border-top: 1px solid #313244; margin-top: 12px; }
+  #stats div { margin: 2px 0; }
+  .min-row { display: flex; gap: 8px; align-items: center; }
+  .min-row input { width: 60px; }
+  .min-row span { font-size: 12px; color: #a6adc8; }
+
+  #drop-hint { position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; pointer-events: none; color: #6c7086; text-align: center; }
+  #drop-hint h1 { font-weight: 300; font-size: 28px; margin: 0 0 8px; }
+  #drop-hint p { margin: 4px 0; font-size: 14px; }
+  #drop-hint .small { font-size: 12px; opacity: 0.7; margin-top: 16px; }
+
+  #graph { width: 100%; height: 100%; cursor: grab; display: block; }
+  #graph:active { cursor: grabbing; }
+
+  .links { pointer-events: none; }
+  .link.you-link { stroke: #313244; stroke-opacity: 0.22; stroke-width: 0.5; }
+  .link.clique-link { stroke-opacity: 0.32; stroke-width: 0.7; }
+  .person-circle { cursor: pointer; }
+  .you-circle { cursor: pointer; }
+  .you-label { fill: #f9e2af; font-size: 14px; font-weight: 700; pointer-events: none; text-anchor: middle; dominant-baseline: central; }
+  .group-label-text { font-size: 12px; font-weight: 700; pointer-events: none; text-anchor: middle; dominant-baseline: central; }
+  .group-label-bg { pointer-events: none; }
+  .person-label { fill: #cdd6f4; font-size: 9px; pointer-events: none; text-anchor: middle; dominant-baseline: central; }
+  .dimmed { opacity: 0.1; }
+  .link.dimmed { opacity: 0.03; }
+  .group-label.dimmed { opacity: 0.25; }
+  .person-circle.match { stroke: #f38ba8 !important; stroke-width: 3px; }
+
+  #tooltip {
+    position: absolute; background: #313244; border: 1px solid #45475a; border-radius: 8px;
+    padding: 10px 14px; font-size: 13px; pointer-events: none; opacity: 0;
+    transition: opacity 0.12s; max-width: 280px; box-shadow: 0 4px 12px rgba(0,0,0,0.5); z-index: 100;
+  }
+  #tooltip strong { color: #89b4fa; }
+  #tooltip .meta { color: #a6adc8; font-size: 12px; margin-top: 4px; }
+  #tooltip .hint { color: #6c7086; font-size: 11px; margin-top: 6px; font-style: italic; }
+
+  #drag-overlay {
+    position: absolute; inset: 0; background: rgba(137, 180, 250, 0.1);
+    border: 3px dashed #89b4fa; pointer-events: none; opacity: 0;
+    transition: opacity 0.15s; z-index: 5;
+  }
+  #drag-overlay.active { opacity: 1; }
+
+  footer {
+    position: absolute; bottom: 8px; right: 12px; font-size: 11px; color: #6c7086; z-index: 5;
+  }
+  footer a { color: #6c7086; text-decoration: none; }
+  footer a:hover { color: #89b4fa; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="panel">
+    <h2>Connections Graph</h2>
+
+    <div class="row">
+      <button class="btn" id="uploadBtn">Upload Connections.csv</button>
+      <input type="file" id="fileInput" accept=".csv" />
+    </div>
+
+    <div id="settings" style="display:none">
+      <div class="row">
+        <label>Group by</label>
+        <select id="groupBy">
+          <option value="company">Company</option>
+          <option value="role">Role keyword (extracted)</option>
+          <option value="position">Position (exact)</option>
+          <option value="year">Connected — year</option>
+          <option value="monthYear">Connected — month / year</option>
+        </select>
+      </div>
+
+      <div class="row">
+        <label>Min group size</label>
+        <div class="min-row">
+          <input type="number" id="minSize" value="3" min="1" max="50" />
+          <span>members (smaller groups hidden)</span>
+        </div>
+      </div>
+
+      <div class="row">
+        <label class="toggle"><input type="checkbox" id="showYou" checked /> <span>Show "You" center</span></label>
+        <label class="toggle"><input type="checkbox" id="showGroupLabels" checked /> <span>Show group labels</span></label>
+        <label class="toggle"><input type="checkbox" id="showPersonLabels" /> <span>Show all person labels</span></label>
+      </div>
+
+      <div class="row">
+        <label>Search</label>
+        <input type="text" id="search" placeholder="Name, company, position…" />
+      </div>
+
+      <div class="row">
+        <button class="btn secondary" id="resetBtn">Reset layout</button>
+      </div>
+
+      <div id="stats"></div>
+    </div>
+  </div>
+
+  <div id="drop-hint">
+    <h1>LinkedIn Connections Graph</h1>
+    <p>Click <strong style="color:#89b4fa">Upload Connections.csv</strong> or drop it here</p>
+    <p class="small">Export from LinkedIn → Settings → Data Privacy → Get a copy of your data → Connections</p>
+    <p class="small">Everything runs locally in your browser. Nothing is uploaded.</p>
+  </div>
+
+  <svg id="graph"></svg>
+  <div id="tooltip"></div>
+  <div id="drag-overlay"></div>
+
+  <footer>
+    <a href="https://github.com/" target="_blank" rel="noopener">open source on github</a>
+  </footer>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const tooltip = $('tooltip');
+const svg = d3.select('#graph');
+
+let rawPeople = [];
+let simulation;
+
+const ui = {
+  groupBy: 'company',
+  minSize: 3,
+  showYou: true,
+  showGroupLabels: true,
+  showPersonLabels: false,
+  search: '',
+};
+
+$('uploadBtn').addEventListener('click', () => $('fileInput').click());
+$('fileInput').addEventListener('change', e => { const f = e.target.files[0]; if (f) readFile(f); });
+$('resetBtn').addEventListener('click', () => rebuild(true));
+
+$('groupBy').addEventListener('change', e => { ui.groupBy = e.target.value; rebuild(true); });
+$('minSize').addEventListener('change', e => { ui.minSize = Math.max(1, +e.target.value || 1); rebuild(true); });
+['showYou', 'showGroupLabels', 'showPersonLabels'].forEach(id =>
+  $(id).addEventListener('change', e => { ui[id] = e.target.checked; rebuild(true); })
+);
+$('search').addEventListener('input', e => { ui.search = e.target.value; applySearch(); });
+
+['dragenter', 'dragover'].forEach(ev =>
+  window.addEventListener(ev, e => { e.preventDefault(); $('drag-overlay').classList.add('active'); })
+);
+['dragleave', 'drop'].forEach(ev =>
+  window.addEventListener(ev, e => { e.preventDefault(); $('drag-overlay').classList.remove('active'); })
+);
+window.addEventListener('drop', e => {
+  e.preventDefault();
+  const f = e.dataTransfer.files[0];
+  if (f && f.name.endsWith('.csv')) readFile(f);
+});
+
+function readFile(file) {
+  const r = new FileReader();
+  r.onload = e => loadCSV(e.target.result);
+  r.readAsText(file);
+}
+
+function loadCSV(text) {
+  const lines = text.split(/\r?\n/);
+  let i = lines.findIndex(l => l.startsWith('First Name'));
+  if (i === -1) i = 0;
+  const rows = d3.csvParse(lines.slice(i).join('\n'));
+
+  rawPeople = rows
+    .filter(r => (r['First Name'] || r['Last Name']))
+    .map(r => ({
+      name: `${(r['First Name']||'').trim()} ${(r['Last Name']||'').trim()}`.trim(),
+      company: (r['Company']||'').trim(),
+      position: (r['Position']||'').trim(),
+      url: (r['URL']||'').trim(),
+      connectedOn: (r['Connected On']||'').trim(),
+    }));
+
+  $('drop-hint').style.display = 'none';
+  $('settings').style.display = 'block';
+  rebuild(true);
+}
+
+const ROLE_KEYWORDS = [
+  ['ceo', 'CEO'], ['cto', 'CTO'], ['cfo', 'CFO'], ['coo', 'COO'], ['cmo', 'CMO'], ['cio', 'CIO'],
+  ['founder', 'Founder'], ['co-founder', 'Founder'], ['cofounder', 'Founder'],
+  ['vp ', 'VP'], ['vice president', 'VP'],
+  ['head of', 'Head'], ['chief', 'Chief'],
+  ['director', 'Director'], ['principal', 'Principal'],
+  ['product manager', 'Product'], ['product owner', 'Product'], ['product', 'Product'],
+  ['software engineer', 'Engineer'], ['backend', 'Engineer'], ['frontend', 'Engineer'],
+  ['full stack', 'Engineer'], ['fullstack', 'Engineer'],
+  ['engineer', 'Engineer'], ['developer', 'Engineer'], ['programmer', 'Engineer'],
+  ['architect', 'Architect'],
+  ['devops', 'DevOps'], ['sre', 'DevOps'], ['platform', 'Platform'], ['infrastructure', 'Platform'],
+  ['data scientist', 'Data'], ['data analyst', 'Data'], ['data engineer', 'Data'], ['ml ', 'Data'], ['machine learning', 'Data'],
+  ['analyst', 'Analyst'], ['researcher', 'Research'], ['scientist', 'Research'],
+  ['designer', 'Designer'], ['ux', 'Designer'], ['ui ', 'Designer'],
+  ['marketing', 'Marketing'], ['growth', 'Marketing'], ['brand', 'Marketing'], ['content', 'Marketing'], ['seo', 'Marketing'],
+  ['account executive', 'Sales'], ['account manager', 'Account'], ['sales', 'Sales'], ['bdr', 'Sales'], ['sdr', 'Sales'], ['business development', 'Sales'],
+  ['recruiter', 'Recruiter'], ['talent', 'Recruiter'],
+  ['customer success', 'Customer Success'], ['csm', 'Customer Success'], ['support', 'Support'],
+  ['consultant', 'Consultant'], ['advisor', 'Consultant'],
+  ['qa ', 'QA'], ['quality assurance', 'QA'], ['tester', 'QA'],
+  ['hr ', 'HR'], ['human resources', 'HR'], ['people operations', 'HR'], ['people ops', 'HR'],
+  ['legal', 'Legal'], ['counsel', 'Legal'],
+  ['finance', 'Finance'], ['accountant', 'Finance'], ['controller', 'Finance'],
+  ['operations', 'Operations'], ['ops ', 'Operations'],
+  ['intern', 'Intern'], ['student', 'Student'],
+  ['investor', 'Investor'], ['partner', 'Partner'],
+  ['lead', 'Lead'], ['manager', 'Manager'], ['specialist', 'Specialist'],
+  ['coordinator', 'Coordinator'], ['associate', 'Associate'],
+];
+
+function extractRole(position) {
+  if (!position) return 'Unknown';
+  const p = position.toLowerCase() + ' ';
+  for (const [kw, label] of ROLE_KEYWORDS) {
+    if (p.includes(kw)) return label;
+  }
+  return 'Other';
+}
+
+function parseDate(s) {
+  if (!s) return null;
+  const d = new Date(s);
+  return isNaN(d) ? null : d;
+}
+const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+function getYear(s) { const d = parseDate(s); return d ? String(d.getFullYear()) : 'Unknown'; }
+function getMonthYear(s) { const d = parseDate(s); return d ? `${MONTHS[d.getMonth()]} ${d.getFullYear()}` : 'Unknown'; }
+
+function groupKeyOf(p, mode) {
+  switch (mode) {
+    case 'company': return p.company || 'Unknown';
+    case 'role': return extractRole(p.position);
+    case 'position': return p.position || 'Unknown';
+    case 'year': return getYear(p.connectedOn);
+    case 'monthYear': return getMonthYear(p.connectedOn);
+  }
+  return 'Unknown';
+}
+
+function colorForKey(key) {
+  let h = 2166136261;
+  for (let i = 0; i < key.length; i++) h = Math.imul(h ^ key.charCodeAt(i), 16777619);
+  const hue = Math.abs(h) % 360;
+  return `hsl(${hue}, 65%, 65%)`;
+}
+
+let groupsCache;
+let personNodesByGroup;
+
+const FULL_CLIQUE_THRESHOLD = 18;
+const SPARSE_K = 3;
+
+function buildGraph() {
+  const groups = new Map();
+  rawPeople.forEach(p => {
+    const k = groupKeyOf(p, ui.groupBy);
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(p);
+  });
+
+  for (const [k, ms] of groups) if (ms.length < ui.minSize) groups.delete(k);
+
+  const nodes = [];
+  const links = [];
+
+  if (ui.showYou) nodes.push({ id: '__you', type: 'you', label: 'You', size: 14 });
+
+  groups.forEach((members, key) => {
+    const color = colorForKey(key);
+    const ids = [];
+    members.forEach((p, i) => {
+      const id = `p::${key}::${i}::${p.name}`;
+      ids.push(id);
+      nodes.push({ id, type: 'person', label: p.name, size: 5, color, groupKey: key, ...p });
+      if (ui.showYou) links.push({ source: '__you', target: id, kind: 'you' });
+    });
+
+    const n = ids.length;
+    if (n <= FULL_CLIQUE_THRESHOLD) {
+      // Full clique — every pair connected. This is what creates the dense bubble look.
+      for (let i = 0; i < n; i++)
+        for (let j = i + 1; j < n; j++)
+          links.push({ source: ids[i], target: ids[j], kind: 'clique', color });
+    } else {
+      // Sparse for big groups: each node linked to next K + one chord across.
+      // Keeps the cluster cohesive without the O(n^2) edge count.
+      for (let i = 0; i < n; i++) {
+        for (let k = 1; k <= SPARSE_K; k++) {
+          const j = (i + k) % n;
+          if (i < j) links.push({ source: ids[i], target: ids[j], kind: 'clique', color });
+        }
+        if (i % 4 === 0) {
+          const j = (i + Math.floor(n / 2)) % n;
+          if (i < j) links.push({ source: ids[i], target: ids[j], kind: 'clique', color });
+        }
+      }
+    }
+  });
+
+  return { nodes, links, groups };
+}
+
+function rebuild(restart) {
+  if (!rawPeople.length) return;
+  const { nodes, links, groups } = buildGraph();
+  groupsCache = groups;
+
+  personNodesByGroup = new Map();
+  nodes.forEach(n => {
+    if (n.type === 'person') {
+      if (!personNodesByGroup.has(n.groupKey)) personNodesByGroup.set(n.groupKey, []);
+      personNodesByGroup.get(n.groupKey).push(n);
+    }
+  });
+
+  const visiblePeople = nodes.filter(n => n.type === 'person').length;
+  const totalGroups = new Set(rawPeople.map(p => groupKeyOf(p, ui.groupBy))).size;
+  $('stats').innerHTML =
+    `<div>${rawPeople.length} total connections</div>` +
+    `<div>${visiblePeople} shown · ${groups.size} of ${totalGroups} groups</div>` +
+    `<div>${links.filter(l=>l.kind==='clique').length.toLocaleString()} intra-group edges</div>` +
+    `<div style="color:#6c7086;margin-top:4px">Drag · Scroll to zoom · Click person → profile</div>`;
+
+  render(nodes, links, restart);
+}
+
+function render(nodes, links, restart) {
+  svg.selectAll('*').remove();
+  if (simulation && restart) simulation.stop();
+
+  const width = window.innerWidth;
+  const height = window.innerHeight;
+  svg.attr('viewBox', [0, 0, width, height]);
+
+  const root = svg.append('g');
+  svg.call(d3.zoom().scaleExtent([0.05, 8]).on('zoom', e => root.attr('transform', e.transform)));
+
+  // Layer order, bottom → top: clique edges, you edges, person circles, you node, group labels
+  const cliqueLinks = links.filter(l => l.kind === 'clique');
+  const youLinks = links.filter(l => l.kind === 'you');
+
+  const cliqueLayer = root.append('g').attr('class', 'links');
+  const youLinkLayer = root.append('g').attr('class', 'links');
+  const nodesLayer = root.append('g');
+  const youLayer = root.append('g');
+  const labelsLayer = root.append('g');
+
+  const cliqueLine = cliqueLayer.selectAll('line').data(cliqueLinks).join('line')
+    .attr('class', 'link clique-link')
+    .attr('stroke', d => d.color);
+
+  const youLine = youLinkLayer.selectAll('line').data(youLinks).join('line')
+    .attr('class', 'link you-link')
+    .attr('stroke', '#313244');
+
+  // Person nodes as bare <circle> elements (no <g> wrapper) for performance.
+  const personNodes = nodes.filter(n => n.type === 'person');
+  const personCircle = nodesLayer.selectAll('circle').data(personNodes, d => d.id).join('circle')
+    .attr('class', 'person-circle')
+    .attr('r', 5)
+    .attr('fill', d => d.color)
+    .attr('opacity', 0.9)
+    .attr('stroke', '#15151f')
+    .attr('stroke-width', 0.8)
+    .call(d3.drag()
+      .on('start', (e, d) => { if (!e.active) simulation.alphaTarget(0.2).restart(); d.fx = d.x; d.fy = d.y; })
+      .on('drag', (e, d) => { d.fx = e.x; d.fy = e.y; })
+      .on('end', (e, d) => { if (!e.active) simulation.alphaTarget(0); d.fx = null; d.fy = null; }))
+    .on('mouseenter', (e, d) => showTip(e, d))
+    .on('mousemove', moveTip)
+    .on('mouseleave', () => tooltip.style.opacity = 0)
+    .on('click', (e, d) => { if (d.url) window.open(d.url, '_blank'); });
+
+  // Optional person labels (off by default, expensive at scale).
+  let personLabel = null;
+  if (ui.showPersonLabels) {
+    personLabel = nodesLayer.selectAll('text').data(personNodes, d => d.id).join('text')
+      .attr('class', 'person-label')
+      .attr('dy', 14)
+      .text(d => d.label);
+  }
+
+  // "You" node lives in its own group so we can attach a label.
+  const youNode = nodes.find(n => n.type === 'you');
+  let youGroup = null;
+  if (youNode) {
+    youGroup = youLayer.selectAll('g').data([youNode]).join('g');
+    youGroup.append('circle')
+      .attr('class', 'you-circle')
+      .attr('r', 14)
+      .attr('fill', '#f9e2af')
+      .attr('stroke', '#15151f')
+      .attr('stroke-width', 2);
+    youGroup.append('text')
+      .attr('class', 'you-label')
+      .attr('dy', 32)
+      .text('You');
+  }
+
+  // Group labels with semi-transparent backgrounds, on top of everything.
+  const groupLabelData = ui.showGroupLabels
+    ? Array.from(groupsCache, ([key, members]) => ({ key, count: members.length, color: colorForKey(key), text: `${key} (${members.length})` }))
+    : [];
+
+  const groupLabel = labelsLayer.selectAll('g').data(groupLabelData, d => d.key).join('g')
+    .attr('class', 'group-label');
+
+  // Approximate width from text length — avoids costly getBBox per label.
+  groupLabel.append('rect')
+    .attr('class', 'group-label-bg')
+    .attr('rx', 4)
+    .attr('fill', 'rgba(21, 21, 31, 0.78)')
+    .attr('stroke', d => d.color)
+    .attr('stroke-opacity', 0.4)
+    .attr('stroke-width', 1)
+    .attr('height', 18)
+    .attr('y', -9)
+    .attr('width', d => d.text.length * 7 + 12)
+    .attr('x', d => -(d.text.length * 7 + 12) / 2);
+
+  groupLabel.append('text')
+    .attr('class', 'group-label-text')
+    .attr('fill', d => d.color)
+    .text(d => d.text);
+
+  let tickCount = 0;
+  simulation = d3.forceSimulation(nodes)
+    .force('link', d3.forceLink(links).id(d => d.id)
+      .distance(d => d.kind === 'you' ? 220 : 22)
+      .strength(d => d.kind === 'you' ? 0.015 : 0.5))
+    .force('charge', d3.forceManyBody()
+      .strength(d => d.type === 'you' ? -400 : -25)
+      .distanceMax(0.22 * Math.min(width, height)))
+    .force('center', d3.forceCenter(width / 2, height / 2).strength(0.04))
+    .alphaDecay(0.04)
+    .alphaMin(0.005)
+    .velocityDecay(0.5)
+    .on('tick', () => {
+      tickCount++;
+      cliqueLine
+        .attr('x1', d => d.source.x).attr('y1', d => d.source.y)
+        .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+      youLine
+        .attr('x1', d => d.source.x).attr('y1', d => d.source.y)
+        .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+      personCircle.attr('cx', d => d.x).attr('cy', d => d.y);
+      if (personLabel) personLabel.attr('x', d => d.x).attr('y', d => d.y);
+      if (youGroup) youGroup.attr('transform', d => `translate(${d.x},${d.y})`);
+
+      // Throttle group label centroid updates — they don't need 60fps precision.
+      if (tickCount % 3 === 0) updateGroupLabels(groupLabel);
+    })
+    .on('end', () => updateGroupLabels(groupLabel));
+
+  if (youNode) { youNode.fx = width / 2; youNode.fy = height / 2; }
+
+  applySearch();
+}
+
+function updateGroupLabels(sel) {
+  if (!sel || sel.empty()) return;
+  sel.attr('transform', d => {
+    const ns = personNodesByGroup.get(d.key);
+    if (!ns || !ns.length) return null;
+    let cx = 0, cy = 0;
+    for (const n of ns) { cx += n.x; cy += n.y; }
+    return `translate(${cx / ns.length},${cy / ns.length})`;
+  });
+}
+
+function showTip(e, d) {
+  if (d.type === 'you') {
+    tooltip.innerHTML = `<strong>You</strong><div class="meta">Center of the graph</div>`;
+  } else {
+    tooltip.innerHTML = `
+      <strong>${esc(d.name)}</strong>
+      <div class="meta">${esc(d.position)}${d.position && d.company ? ' · ' : ''}${esc(d.company)}</div>
+      ${d.connectedOn ? `<div class="meta">Connected ${esc(d.connectedOn)}</div>` : ''}
+      <div class="meta" style="color:${d.color}">Group: ${esc(d.groupKey)}</div>
+      ${d.url ? `<div class="hint">Click to open profile</div>` : ''}
+    `;
+  }
+  tooltip.style.opacity = 1;
+}
+function moveTip(e) {
+  tooltip.style.left = (e.clientX + 14) + 'px';
+  tooltip.style.top = (e.clientY + 14) + 'px';
+}
+
+function applySearch() {
+  if (!simulation) return;
+  const q = ui.search.trim().toLowerCase();
+  const personCircle = svg.selectAll('.person-circle');
+  const cliqueLine = svg.selectAll('.clique-link');
+  const youLine = svg.selectAll('.you-link');
+  const groupLabel = svg.selectAll('.group-label');
+
+  if (!q) {
+    personCircle.classed('dimmed', false).classed('match', false);
+    cliqueLine.classed('dimmed', false);
+    youLine.classed('dimmed', false);
+    groupLabel.classed('dimmed', false);
+    return;
+  }
+
+  const match = new Set();
+  const matchedGroups = new Set();
+  personCircle.each(function(d) {
+    const hay = (d.name || '') + ' ' + (d.position || '') + ' ' + (d.company || '') + ' ' + (d.groupKey || '');
+    if (hay.toLowerCase().includes(q)) {
+      match.add(d.id);
+      if (d.groupKey) matchedGroups.add(d.groupKey);
+    }
+  });
+  personCircle.classed('match', d => match.has(d.id))
+              .classed('dimmed', d => !match.has(d.id));
+  const dimLink = d => {
+    const s = typeof d.source === 'object' ? d.source.id : d.source;
+    const t = typeof d.target === 'object' ? d.target.id : d.target;
+    return !match.has(s) && !match.has(t);
+  };
+  cliqueLine.classed('dimmed', dimLink);
+  youLine.classed('dimmed', dimLink);
+  groupLabel.classed('dimmed', d => !matchedGroups.has(d.key));
+}
+
+function esc(s) {
+  return String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+window.addEventListener('resize', () => {
+  if (!simulation) return;
+  const w = window.innerWidth, h = window.innerHeight;
+  svg.attr('viewBox', [0, 0, w, h]);
+  simulation.force('center', d3.forceCenter(w/2, h/2)).alpha(0.3).restart();
+  const you = simulation.nodes().find(n => n.type === 'you');
+  if (you) { you.fx = w/2; you.fy = h/2; }
+});
+</script>
+</body>
+</html>
