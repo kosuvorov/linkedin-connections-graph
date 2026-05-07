@@ -46,6 +46,9 @@
   .min-row { display: flex; gap: 8px; align-items: center; }
   .min-row input { width: 60px; }
   .min-row span { font-size: 12px; color: #a6adc8; }
+  .slider-row { display: flex; gap: 8px; align-items: center; }
+  .slider-row input[type=range] { flex: 1; accent-color: #89b4fa; cursor: pointer; }
+  .slider-row .val { font-size: 12px; color: #89b4fa; min-width: 22px; text-align: right; }
 
   #drop-hint { position: absolute; inset: 0; display: flex; flex-direction: column;
     align-items: center; justify-content: center; pointer-events: none; color: #6c7086; text-align: center; }
@@ -122,6 +125,14 @@
       </div>
 
       <div class="row">
+        <label>Cluster separation</label>
+        <div class="slider-row">
+          <input type="range" id="clusterSep" min="0" max="10" step="0.5" value="2" />
+          <span class="val" id="clusterSepVal">2</span>
+        </div>
+      </div>
+
+      <div class="row">
         <label class="toggle"><input type="checkbox" id="showYou" checked /> <span>Show "You" center</span></label>
         <label class="toggle"><input type="checkbox" id="showGroupLabels" checked /> <span>Show group labels</span></label>
         <label class="toggle"><input type="checkbox" id="showPersonLabels" /> <span>Show all person labels</span></label>
@@ -168,6 +179,39 @@ let edgeCtx, edgeW, edgeH, edgeTransform = d3.zoomIdentity;
 let edgeCliqueByColor = new Map(), edgeYouLinks = [];
 let searchMatchedIds = null;
 
+function forceClusterSeparation() {
+  function force(alpha) {
+    const s = ui.clusterSep;
+    if (s <= 0 || !personNodesByGroup) return;
+
+    const centroids = [];
+    for (const [, members] of personNodesByGroup) {
+      if (!members.length) continue;
+      let cx = 0, cy = 0;
+      for (const n of members) { cx += n.x || 0; cy += n.y || 0; }
+      centroids.push({ cx: cx / members.length, cy: cy / members.length,
+        r: Math.sqrt(members.length) * 6, members });
+    }
+
+    for (let i = 0; i < centroids.length; i++) {
+      for (let j = i + 1; j < centroids.length; j++) {
+        const a = centroids[i], b = centroids[j];
+        let dx = b.cx - a.cx, dy = b.cy - a.cy;
+        let dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < 0.1) { dx = Math.random() - 0.5; dy = Math.random() - 0.5; dist = 0.5; }
+        const minDist = a.r + b.r + 20;
+        if (dist >= minDist) continue;
+        const push = (minDist - dist) / minDist * alpha * s;
+        const nx = dx / dist * push, ny = dy / dist * push;
+        for (const n of a.members) { n.vx -= nx; n.vy -= ny; }
+        for (const n of b.members) { n.vx += nx; n.vy += ny; }
+      }
+    }
+  }
+  force.initialize = function() {};
+  return force;
+}
+
 function drawEdges() {
   if (!edgeCtx) return;
   const dpr = window.devicePixelRatio || 1;
@@ -208,6 +252,7 @@ function drawEdges() {
 const ui = {
   groupBy: 'company',
   minSize: 3,
+  clusterSep: 2,
   showYou: true,
   showGroupLabels: true,
   showPersonLabels: false,
@@ -219,6 +264,11 @@ $('fileInput').addEventListener('change', e => { const f = e.target.files[0]; if
 $('resetBtn').addEventListener('click', () => rebuild(true));
 
 $('groupBy').addEventListener('change', e => { ui.groupBy = e.target.value; rebuild(true); });
+$('clusterSep').addEventListener('input', e => {
+  ui.clusterSep = +e.target.value;
+  $('clusterSepVal').textContent = e.target.value;
+  if (simulation) simulation.alpha(0.3).restart();
+});
 $('minSize').addEventListener('change', e => { ui.minSize = Math.max(1, +e.target.value || 1); rebuild(true); });
 ['showYou', 'showGroupLabels', 'showPersonLabels'].forEach(id =>
   $(id).addEventListener('change', e => { ui[id] = e.target.checked; rebuild(true); })
@@ -511,6 +561,7 @@ function render(nodes, links, restart) {
     .force('charge', d3.forceManyBody()
       .strength(d => d.type === 'you' ? -400 : -100)
       .distanceMax(0.2 * Math.min(width, height)))
+    .force('clusterSep', forceClusterSeparation())
     .force('center', d3.forceCenter(cx, cy).strength(0.02))
     .alphaDecay(0.035)
     .alphaMin(0.005)
