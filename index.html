@@ -292,6 +292,39 @@ function colorForKey(key) {
   return `hsl(${hue}, 65%, 65%)`;
 }
 
+// Custom force: each group's centroid is pulled toward (centerX, centerY) — gravity —
+// and each member is pulled toward its own group's centroid — cohesion. The gravity
+// term lets large bubbles sit further from center (where they have space) instead of
+// piling 200 nodes at a fixed radius like fixed-length you-links would.
+function groupForces(centerX, centerY, gravity, cohesion) {
+  let groups;
+  function force(alpha) {
+    if (!groups) return;
+    for (const members of groups.values()) {
+      let cx = 0, cy = 0;
+      const n = members.length;
+      for (const m of members) { cx += m.x; cy += m.y; }
+      cx /= n; cy /= n;
+      const gx = (centerX - cx) * gravity * alpha;
+      const gy = (centerY - cy) * gravity * alpha;
+      for (const m of members) {
+        m.vx += gx + (cx - m.x) * cohesion * alpha;
+        m.vy += gy + (cy - m.y) * cohesion * alpha;
+      }
+    }
+  }
+  force.initialize = (nodes) => {
+    groups = new Map();
+    for (const node of nodes) {
+      if (node.type === 'person' && node.groupKey) {
+        if (!groups.has(node.groupKey)) groups.set(node.groupKey, []);
+        groups.get(node.groupKey).push(node);
+      }
+    }
+  };
+  return force;
+}
+
 let groupsCache;
 let personNodesByGroup;
 
@@ -472,15 +505,18 @@ function render(nodes, links, restart) {
     .text(d => d.text);
 
   let tickCount = 0;
+  const cx = width / 2, cy = height / 2;
   simulation = d3.forceSimulation(nodes)
     .force('link', d3.forceLink(links).id(d => d.id)
-      .distance(d => d.kind === 'you' ? 220 : 22)
-      .strength(d => d.kind === 'you' ? 0.015 : 0.5))
+      .distance(22)
+      // you-links are visual only; intra-group attraction comes from the custom groupForces
+      .strength(d => d.kind === 'you' ? 0 : 0.5))
     .force('charge', d3.forceManyBody()
       .strength(d => d.type === 'you' ? -400 : -25)
-      .distanceMax(0.22 * Math.min(width, height)))
-    .force('center', d3.forceCenter(width / 2, height / 2).strength(0.04))
-    .alphaDecay(0.04)
+      .distanceMax(0.32 * Math.min(width, height)))
+    .force('groupForces', groupForces(cx, cy, 0.09, 0.05))
+    .force('center', d3.forceCenter(cx, cy).strength(0.01))
+    .alphaDecay(0.035)
     .alphaMin(0.005)
     .velocityDecay(0.5)
     .on('tick', () => {
